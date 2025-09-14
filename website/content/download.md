@@ -27,6 +27,9 @@ sudo dnf install https://github.com/tattoy-org/tattoy/releases/download/tattoy-v
 ### Homebrew
 `brew install tattoy-org/tap/tattoy`
 
+### Nix
+`nix-env -iA nixpkgs.tattoy`
+
 ## Compiling From Source
 
 You will first need [Rust](https://www.rust-lang.org/tools/install). Then you can run: 

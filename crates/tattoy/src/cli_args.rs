@@ -3,7 +3,7 @@
 /// The default name of the main config file.
 pub const DEFAULT_CONFIG_FILE_NAME: &str = "tattoy.toml";
 
-/// Simple program to greet a person
+/// CLI arguments
 #[derive(clap::Parser, Debug, Clone)]
 #[command(version, about, long_about = "Tattoy argument description")]
 pub(crate) struct CliArgs {
