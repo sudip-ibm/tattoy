@@ -232,43 +232,60 @@ pub(crate) trait Shaderer: Sized {
         self.tattoy_mut().opacity = self.get_opacity().await;
         self.tattoy_mut().layer = self.get_layer().await;
 
-        let mut hashable_render = Vec::new();
         let is_upload_tty_as_pixels = self.is_upload_tty_as_pixels().await;
-
+        let is_should_hash = self.is_should_hash_render();
+        
         let tty_height_in_pixels = u32::from(self.tattoy().height) * 2;
+        let width = u32::from(self.tattoy().width);
+        
+        // Pre-allocate hashable_render to avoid reallocations
+        let mut hashable_render = if is_should_hash {
+            Vec::with_capacity((width * tty_height_in_pixels) as usize * 10)
+        } else {
+            Vec::new()
+        };
+
+        // Cache the constant division factor for better performance
+        const INV_255: f32 = 1.0 / 255.0;
+
+        // Process pixels in row-major order for better cache locality
         for y in 0..tty_height_in_pixels {
-            for x in 0..self.tattoy().width {
-                let offset_for_reversal = 1;
-                let y_reversed = tty_height_in_pixels - y - offset_for_reversal;
-
+            let y_reversed = tty_height_in_pixels - y - 1;
+            
+            for x in 0..width {
+                // Use get_pixel_checked but avoid string allocation in hot path
                 let pixel_u8 = rendered_pixels
-                    .get_pixel_checked(x.into(), y_reversed)
-                    .context(format!("Couldn't get new pixel: {x}x{y_reversed}"))?
+                    .get_pixel_checked(x, y_reversed)
+                    .context("Couldn't get new pixel")?
                     .0;
-                let pixel = [
-                    f32::from(pixel_u8[0]) / 255.0,
-                    f32::from(pixel_u8[1]) / 255.0,
-                    f32::from(pixel_u8[2]) / 255.0,
-                    f32::from(pixel_u8[3]) / 255.0,
-                ];
-
-                if is_upload_tty_as_pixels {
-                    if self.are_pixels_different(x.into(), y_reversed, pixel_u8)? {
-                        if self.is_should_hash_render() {
-                            hashable_render.extend(
-                                Self::convert_pixel_to_binary(x, y_reversed, pixel_u8).to_vec(),
-                            );
-                        }
-                        self.tattoy_mut().surface.add_pixel(
-                            x.into(),
-                            y.try_into()?,
-                            pixel.into(),
-                        )?;
-                    }
+                
+                // Determine if we need to process this pixel
+                let needs_processing = if is_upload_tty_as_pixels {
+                    self.are_pixels_different_fast(x, y_reversed, pixel_u8)
                 } else {
-                    self.tattoy_mut()
-                        .surface
-                        .add_pixel(x.into(), y.try_into()?, pixel.into())?;
+                    true
+                };
+
+                if needs_processing {
+                    // Only convert to f32 if we're actually going to use it
+                    let pixel = [
+                        f32::from(pixel_u8[0]) * INV_255,
+                        f32::from(pixel_u8[1]) * INV_255,
+                        f32::from(pixel_u8[2]) * INV_255,
+                        f32::from(pixel_u8[3]) * INV_255,
+                    ];
+                    
+                    if is_should_hash {
+                        hashable_render.extend_from_slice(
+                            &Self::convert_pixel_to_binary_inline(x as u16, y_reversed, pixel_u8)
+                        );
+                    }
+                    
+                    self.tattoy_mut().surface.add_pixel(
+                        x as usize,
+                        y as usize,
+                        pixel.into(),
+                    )?;
                 }
             }
         }
@@ -313,6 +330,39 @@ pub(crate) trait Shaderer: Sized {
             .context(format!("Couldn't get old pixel: {x}x{y_reversed}"))?
             .0;
         Ok(new_pixel != old_pixel)
+    /// Optimized version of are_pixels_different that avoids error context allocation.
+    /// Returns true if pixels are different or if old pixel cannot be retrieved.
+    #[inline(always)]
+    fn are_pixels_different_fast(&self, x: u32, y: u32, new_pixel: [u8; 4]) -> bool {
+        if let Some(old_pixel) = self.gpu().tty_pixels.get_pixel_checked(x, y) {
+            old_pixel.0 != new_pixel
+        } else {
+            true // If we can't get old pixel, assume different to ensure rendering
+        }
+    }
+
+    /// Inline version of convert_pixel_to_binary for better performance.
+    #[inline(always)]
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        reason = "It's just for creating a unique hash"
+    )]
+    fn convert_pixel_to_binary_inline(x: u16, y: u32, pixel: [u8; 4]) -> [u8; 10] {
+        [
+            (x >> 8) as u8,
+            x as u8,
+            (y >> 24) as u8,
+            (y >> 16) as u8,
+            (y >> 8) as u8,
+            y as u8,
+            pixel[0],
+            pixel[1],
+            pixel[2],
+            pixel[3],
+        ]
+    }
+
     }
 
     /// Get the current colour of the cursor.
